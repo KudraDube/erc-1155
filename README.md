@@ -13,7 +13,7 @@ Signed vouchers are how most real NFT and pass systems let a backend decide who 
 | Item | State |
 |---|---|
 | Contract | Complete, patched with the Contracts Pack fixes |
-| Tests | 42 passing (unit, signature attacks, supply cap, receiver hook, fuzz, invariant) |
+| Tests | 43 passing (unit, signature attacks, supply cap, receiver hook, fuzz, invariant) |
 | Audit | None. This is a learning project, **do not deploy with real funds** |
 
 ## How it works
@@ -55,7 +55,7 @@ Four of the tests fail against the original accounting and pass against the patc
 
 ## Tests
 
-`test/TieredPass1155.t.sol`, 42 tests:
+`test/TieredPass1155.t.sol`, 43 tests:
 
 - roles, URI and interface support
 - every admin function with access control
