@@ -16,7 +16,7 @@ contract TieredPass1155 is ERC1155, AccessControl, Pausable {
 
     // tier id => max that can ever be minted for that tier (0 = uncapped, not set)
     mapping(uint256 => uint256) public maxSupply;
-    // tier id => how many have been minted so far
+    // tier id => how many have been minted so far (lifetime total, burns do not reduce it)
     mapping(uint256 => uint256) public totalMinted;
     // nonce => already used? stops a signed authorisation being replayed
     mapping(uint256 => bool) public usedNonces;
@@ -42,13 +42,15 @@ contract TieredPass1155 is ERC1155, AccessControl, Pausable {
     function unpause() external onlyRole(DEFAULT_ADMIN_ROLE) { _unpause(); }
 
     // ============ CUSTOM LOGIC: the signature scheme ============
-    function _hashMintRequest(address to, uint256 tierId, uint256 amount, uint256 nonce)
+    // The deadline is part of the signed data, so a signature cannot be reused after it expires
+    // and the caller cannot change the deadline without invalidating the signature.
+    function _hashMintRequest(address to, uint256 tierId, uint256 amount, uint256 nonce, uint256 deadline)
         internal
         view
         returns (bytes32)
     {
         bytes32 structHash = keccak256(
-            abi.encodePacked(to, tierId, amount, nonce, address(this), block.chainid)
+            abi.encodePacked(to, tierId, amount, nonce, deadline, address(this), block.chainid)
         );
         return MessageHashUtils.toEthSignedMessageHash(structHash);
     }
@@ -57,43 +59,47 @@ contract TieredPass1155 is ERC1155, AccessControl, Pausable {
         uint256 tierId,
         uint256 amount,
         uint256 nonce,
+        uint256 deadline,
         bytes calldata signature
     ) external whenNotPaused {
+        require(block.timestamp <= deadline, "signature expired");
         require(!usedNonces[nonce], "nonce already used");
 
-        bytes32 digest = _hashMintRequest(msg.sender, tierId, amount, nonce);
+        bytes32 digest = _hashMintRequest(msg.sender, tierId, amount, nonce, deadline);
         address recovered = digest.recover(signature);
         require(hasRole(SIGNER_ROLE, recovered), "invalid signature");
 
+        // early check for a clear error message. _update enforces the same cap again below.
         uint256 cap = maxSupply[tierId];
         require(cap == 0 || totalMinted[tierId] + amount <= cap, "exceeds tier supply");
 
-        // effects before interaction: mark nonce used and update accounting
-        // BEFORE the external-facing _mint call (CEI pattern)
+        // effects before interaction: mark the nonce used BEFORE the external-facing _mint
+        // call (CEI pattern). totalMinted is updated inside _update, which _mint calls.
         usedNonces[nonce] = true;
-        totalMinted[tierId] += amount;
 
         _mint(msg.sender, tierId, amount, "");
         emit Minted(msg.sender, tierId, amount, nonce);
     }
 
-    // ============ CUSTOM LOGIC: enforcing the cap at the lowest level ============
+    // ============ CUSTOM LOGIC: accounting and the cap at the lowest level ============
     // _update is ERC1155's internal hook that EVERY mint, burn and transfer
-    // routes through. Overriding it is a second, independent guard on the
-    // supply cap - even if some future function forgets to check maxSupply
-    // directly, this still catches it.
+    // routes through. totalMinted is increased HERE, not in mintWithSignature, so any
+    // future mint path (a batch mint, an airdrop function) is counted and capped automatically.
     function _update(address from, address to, uint256[] memory ids, uint256[] memory values)
         internal
         override
     {
+        super._update(from, to, ids, values);
+
         if (from == address(0)) {
             // this is a mint (from == zero address)
             for (uint256 i = 0; i < ids.length; i++) {
-                uint256 cap = maxSupply[ids[i]];
-                require(cap == 0 || totalMinted[ids[i]] <= cap, "tier supply exceeded");
+                uint256 tierId = ids[i];
+                totalMinted[tierId] += values[i];
+                uint256 cap = maxSupply[tierId];
+                require(cap == 0 || totalMinted[tierId] <= cap, "tier supply exceeded");
             }
         }
-        super._update(from, to, ids, values);
     }
 
     // ============ REQUIRED OVERRIDE: multiple inheritance resolution ============
